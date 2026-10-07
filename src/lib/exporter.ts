@@ -219,11 +219,20 @@ export async function exportMp4(opts: ExportOptions): Promise<ExportResult> {
   });
 
   const aborted = () => signal?.aborted;
-  const onAbort = () => void output.cancel().catch(() => {});
+  // Once the output is canceled, pending add() promises may never settle, so every await races the abort.
+  let rejectAbort!: (e: Error) => void;
+  const abortPromise = new Promise<never>((_, rej) => (rejectAbort = rej));
+  abortPromise.catch(() => {});
+  const guard = <T,>(p: Promise<T>) => Promise.race([p, abortPromise]);
+  const onAbort = () => {
+    rejectAbort(new ExportCanceledError());
+    void output.cancel().catch(() => {});
+  };
   signal?.addEventListener('abort', onAbort);
+  if (signal?.aborted) onAbort();
 
   try {
-    await output.start();
+    await guard(output.start());
 
     // Audio is fed in ~1s slices just ahead of the video so the muxer can interleave without buffering everything.
     const sliceSamples = sr;
@@ -238,7 +247,7 @@ export async function exportMp4(opts: ExportOptions): Promise<ExportResult> {
           const slice = src.subarray(Math.min(from, src.length), Math.min(from + n, src.length));
           buf.copyToChannel(slice, c); // past the end of the source stays silent (zero)
         }
-        await audioSource.add(buf);
+        await guard(audioSource.add(buf));
         audioFed += n;
       }
     };
@@ -250,7 +259,7 @@ export async function exportMp4(opts: ExportOptions): Promise<ExportResult> {
       await feedAudioUntil(Math.round(((i + 1) / fps + 1) * sr));
 
       render(ctx, start + i / fps);
-      await videoSource.add(i / fps, 1 / fps);
+      await guard(videoSource.add(i / fps, 1 / fps));
 
       const now = performance.now();
       if (onProgress && (now - lastReport > 100 || i === totalFrames - 1)) {
@@ -272,7 +281,7 @@ export async function exportMp4(opts: ExportOptions): Promise<ExportResult> {
 
     videoSource.close();
     audioSource.close();
-    await output.finalize();
+    await guard(output.finalize());
 
     if (target instanceof BufferTarget) {
       const buffer = target.buffer!;
