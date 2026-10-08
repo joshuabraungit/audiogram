@@ -5,7 +5,7 @@ background, title and headshot, exported as an MP4 (H.264 + AAC). Everything run
 no API keys, the audio never leaves your machine.
 
 ```bash
-cd audiogram
+cd audiogram   # after cloning
 npm install
 npm run dev        # http://localhost:5173
 ```
