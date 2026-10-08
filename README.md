@@ -13,6 +13,20 @@ npm run dev        # http://localhost:5173
 Use desktop **Chrome** (or Edge). Export needs WebCodecs with an H.264 encoder; other browsers get a banner
 saying so. The first transcription downloads the Whisper model from huggingface.co (cached afterwards).
 
+## Use it as an app (no Terminal)
+
+Everything runs in the browser, so any static host works. Recommended: **Vercel** (free).
+
+1. Go to https://vercel.com/new, sign in with GitHub, and import `joshuabraungit/audiogram`.
+2. Keep the detected settings (Vite, `npm run build`, output `dist`) and click **Deploy**.
+3. Open the URL it gives you in Chrome and click the install icon at the right end of the address bar
+   (or ⋮ → Cast, save and share → Install page as app).
+
+Audiogram then lives in your Dock/Launchpad, opens in its own window, and shows up under
+**Open With** for MP3, WAV and M4A files. Every push to `main` redeploys automatically.
+
+Avoid Cloudflare Pages: the speech engine's wasm file (~27 MB) is over its 25 MB per-file limit.
+
 ## How it works
 
 | Piece | File | Notes |

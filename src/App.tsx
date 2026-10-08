@@ -157,6 +157,18 @@ export default function App() {
     [loaded, model, startTranscription],
   );
 
+  // Installed app: files opened via "Open With → Audiogram" arrive through the launch queue.
+  const onFileRef = useRef(onFile);
+  onFileRef.current = onFile;
+  useEffect(() => {
+    type LaunchParams = { files: FileSystemFileHandle[] };
+    const lq = (window as unknown as { launchQueue?: { setConsumer(cb: (p: LaunchParams) => void): void } }).launchQueue;
+    lq?.setConsumer(async (params) => {
+      const handle = params.files[0];
+      if (handle) void onFileRef.current(await handle.getFile());
+    });
+  }, []);
+
   // Test hook (dev builds only) so the e2e test can seek to exact timestamps.
   useEffect(() => {
     if (import.meta.env.DEV) (window as unknown as { __ag: unknown }).__ag = { player: loaded?.player, analysis: loaded?.analysis };
