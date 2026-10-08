@@ -1,4 +1,4 @@
-import type { AudioAnalysis } from './audio';
+import type { Analysis } from './edit';
 import { activeWordIndex, pageAt, type CaptionPage } from './captions';
 import { ASPECT_SIZES, type Settings } from './types';
 
@@ -9,7 +9,7 @@ export interface RenderAssets {
 
 export interface Scene {
   settings: Settings;
-  analysis: AudioAnalysis | null;
+  analysis: Analysis | null;
   pages: CaptionPage[];
   assets: RenderAssets;
 }

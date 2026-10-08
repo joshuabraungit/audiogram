@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import type { AudioAnalysis } from '../lib/audio';
+import type { Analysis } from '../lib/edit';
 import type { Player } from '../lib/player';
 import { canvasSize, drawFrame, type Scene } from '../lib/render';
 import { fmtTime } from './ui';
@@ -55,7 +55,7 @@ export function Preview({ sceneRef, player, aspectKey }: { sceneRef: RefObject<S
   );
 }
 
-export function Transport({ player, trim, setTrim, analysis }: { player: Player; trim: [number, number]; setTrim: (t: [number, number]) => void; analysis: AudioAnalysis }) {
+export function Transport({ player, trim, setTrim, analysis }: { player: Player; trim: [number, number]; setTrim: (t: [number, number]) => void; analysis: Analysis }) {
   const t = usePlayerTime(player);
   const [playing, setPlaying] = useState(player.playing);
   useEffect(() => player.onChange(() => setPlaying(player.playing)), [player]);
@@ -126,7 +126,7 @@ function TimeField({ value, onChange }: { value: number; onChange: (v: number) =
 }
 
 /** Whole-file overview: loudness envelope, shaded trim region with draggable handles, and the playhead. */
-function Timeline({ t, duration, trim, setTrim, analysis, onSeek }: { t: number; duration: number; trim: [number, number]; setTrim: (t: [number, number]) => void; analysis: AudioAnalysis; onSeek: (t: number) => void }) {
+function Timeline({ t, duration, trim, setTrim, analysis, onSeek }: { t: number; duration: number; trim: [number, number]; setTrim: (t: [number, number]) => void; analysis: Analysis; onSeek: (t: number) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drag = useRef<null | 'start' | 'end' | 'seek'>(null);

@@ -3,6 +3,8 @@ export interface Word {
   text: string;
   start: number;
   end: number;
+  /** Removed in the transcript: its audio is cut from preview and export, but it can be restored. */
+  deleted?: boolean;
 }
 
 export type Aspect = '1:1' | '9:16' | '16:9';

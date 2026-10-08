@@ -14,6 +14,7 @@ import {
   canEncodeVideo,
   type Target,
 } from 'mediabunny';
+import type { PcmSource } from './edit';
 
 export type RenderFn = (ctx: OffscreenCanvasRenderingContext2D, t: number) => void;
 
@@ -21,8 +22,8 @@ export interface ExportOptions {
   width: number;
   height: number;
   fps: number;
-  /** Full decoded audio. The exported clip is [start, end) of this buffer. */
-  audio: AudioBuffer;
+  /** Full audio (a decoded buffer, or the cut-aware EditedSource). The exported clip is [start, end) of it. */
+  audio: AudioBuffer | PcmSource;
   start: number;
   end: number;
   /** Draws the frame for absolute source time `t` (seconds). */
@@ -170,6 +171,7 @@ export async function exportMp4(opts: ExportOptions): Promise<ExportResult> {
     throw new ExportUnsupportedError('This browser cannot encode H.264 video.');
   }
   const channels = Math.min(2, audio.numberOfChannels);
+  const pcm: PcmSource = 'read' in audio ? audio : bufferPcm(audio);
   const usedWasmAac = await ensureAac(channels, audio.sampleRate, audioBitrate);
   const aacDelay = await measureAacDelay(channels, audio.sampleRate, audioBitrate);
 
@@ -241,11 +243,10 @@ export async function exportMp4(opts: ExportOptions): Promise<ExportResult> {
       while (audioFed < Math.min(sampleTarget, totalSamples)) {
         const n = Math.min(sliceSamples, totalSamples - audioFed);
         const buf = new AudioBuffer({ length: n, numberOfChannels: channels, sampleRate: sr });
+        const tmp = new Float32Array(n);
         for (let c = 0; c < channels; c++) {
-          const src = audio.getChannelData(c);
-          const from = startSample + audioFed;
-          const slice = src.subarray(Math.min(from, src.length), Math.min(from + n, src.length));
-          buf.copyToChannel(slice, c); // past the end of the source stays silent (zero)
+          pcm.read(c, startSample + audioFed, tmp); // past the end stays silent (zero)
+          buf.copyToChannel(tmp, c);
         }
         await guard(audioSource.add(buf));
         audioFed += n;
@@ -295,4 +296,17 @@ export async function exportMp4(opts: ExportOptions): Promise<ExportResult> {
   } finally {
     signal?.removeEventListener('abort', onAbort);
   }
+}
+
+function bufferPcm(buffer: AudioBuffer): PcmSource {
+  return {
+    sampleRate: buffer.sampleRate,
+    numberOfChannels: buffer.numberOfChannels,
+    duration: buffer.duration,
+    read(c, start, out) {
+      const src = buffer.getChannelData(c);
+      out.fill(0);
+      if (start < src.length) out.set(src.subarray(Math.max(0, start), Math.min(src.length, start + out.length)));
+    },
+  };
 }

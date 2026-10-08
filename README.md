@@ -27,6 +27,17 @@ Audiogram then lives in your Dock/Launchpad, opens in its own window, and shows 
 
 Avoid Cloudflare Pages: the speech engine's wasm file (~27 MB) is over its 25 MB per-file limit.
 
+## Editing by text
+
+Like Descript: select words in the transcript (drag, or click then shift-click) and press **Delete** to cut
+that audio. Cut words stay visible, struck through; click one to bring the cut back. ⌘Z / ⇧⌘Z undo and redo,
+and "Restore all" clears every cut. Double-click a word to fix its spelling without touching the audio.
+
+A deleted run is cut from its first word to the start of the next kept word, so the pause before it stays and
+the one after it goes. Joins get a 6 ms fade so they never click. Nothing is copied: playback schedules the kept
+pieces back to back, and the waveform and export read the original through the same time map
+(`src/lib/edit.ts`), so cutting is instant even on long files.
+
 ## How it works
 
 | Piece | File | Notes |
@@ -53,7 +64,7 @@ Avoid Cloudflare Pages: the speech engine's wasm file (~27 MB) is over its 25 MB
 npm test                                   # pure logic: chunking, caption paging, word edits
 # Browser tests need a Chrome with H.264 (Playwright's bundled Chromium has none) and `npm run dev` running:
 CHROME=/path/to/chrome npm run test:export -- 130 1080x1920   # export pipeline: beeps vs. flashes, sync to the ms
-CHROME=/path/to/chrome npm run test:e2e    # full UI: load, transcribe (mock), edit, trim, 150 s export, WYSIWYG check
+CHROME=/path/to/chrome npm run test:e2e    # full UI: load, transcribe (mock), edit, trim, cut by text, exports verified
 CHROME=/path/to/chrome npm run test:long   # 37 min file end to end
 ```
 

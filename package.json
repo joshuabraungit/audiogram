@@ -10,7 +10,7 @@
     "typecheck": "tsc -b",
     "test": "node --test test/logic.test.ts",
     "test:export": "node test/export-test.mjs",
-    "test:e2e": "node test/app-e2e.mjs && node test/app-edge.mjs",
+    "test:e2e": "node test/app-e2e.mjs && node test/app-cut.mjs && node test/app-edge.mjs",
     "test:long": "node test/app-long.mjs"
   },
   "devDependencies": {

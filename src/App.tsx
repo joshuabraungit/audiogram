@@ -7,6 +7,7 @@ import { Transcript } from './components/Transcript';
 import { Button, ProgressBar, Select } from './components/ui';
 import { AudioAnalysis, decodeAudioFile, LONG_FILE_SEC, toWhisperInput } from './lib/audio';
 import { buildPages } from './lib/captions';
+import { computeCuts, EditedSource, editedAnalysis, keptSegments, remapWords, TimeMap, type Analysis } from './lib/edit';
 import { estimateBytes, ExportCanceledError, exportMp4, ExportUnsupportedError } from './lib/exporter';
 import { Player } from './lib/player';
 import { canvasSize, drawFrame, ensureFonts, type Scene } from './lib/render';
@@ -41,8 +42,20 @@ function loadSettings(): Settings {
 
 interface Loaded {
   file: File;
+  /** the original decoded audio; never modified */
   buffer: AudioBuffer;
+  /** analysis of the original audio, computed once per file */
   analysis: AudioAnalysis;
+}
+
+/**
+ * The audio after transcript cuts. Nothing is copied: playback, waveform and export all read the original
+ * through the TimeMap, so a cut is instant even on a 30+ minute file.
+ */
+interface Edit {
+  map: TimeMap;
+  source: EditedSource;
+  analysis: Analysis;
   player: Player;
 }
 
@@ -62,7 +75,11 @@ export default function App() {
       return MODELS[0].id;
     }
   });
-  const [trim, setTrim] = useState<[number, number]>([0, 0]);
+  /** clip range in source (original file) time, so it survives cuts */
+  const [trimSrc, setTrimSrc] = useState<[number, number]>([0, 0]);
+  const [edit, setEdit] = useState<Edit | null>(null);
+  const editRef = useRef<Edit | null>(null);
+  const history = useRef<{ past: Word[][]; future: Word[][] }>({ past: [], future: [] });
   const [bgImage, setBgImage] = useState<ImageBitmap | null>(null);
   const [logo, setLogo] = useState<ImageBitmap | null>(null);
   const [exportState, setExportState] = useState<ExportState | null>(null);
@@ -81,18 +98,70 @@ export default function App() {
     }
   }, [settings]);
 
-  const pages = useMemo(() => buildPages(words, settings.captions.maxWordsPerLine * settings.captions.lines), [words, settings.captions.maxWordsPerLine, settings.captions.lines]);
+  // ---- Text-based editing: deleted words become cuts; the edited audio is rebuilt when cuts change.
+  const cuts = useMemo(() => (loaded ? computeCuts(words, loaded.buffer.duration) : []), [words, loaded]);
+  const cutsKey = useMemo(() => JSON.stringify(cuts), [cuts]);
+  useEffect(() => {
+    if (!loaded) return;
+    const prev = editRef.current;
+    const map = new TimeMap(keptSegments(cuts, loaded.buffer.duration));
+    const source = EditedSource.fromBuffer(loaded.buffer, map);
+    const analysis = editedAnalysis(loaded.analysis, map);
+    const player = new Player(loaded.buffer, map);
+    // Keep the playhead on the same spot of the original audio.
+    if (prev && prev.player.duration > 0) player.seek(map.toEdit(prev.map.toSource(prev.player.time)));
+    prev?.player.dispose();
+    const next = { map, source, analysis, player };
+    editRef.current = next;
+    setEdit(next);
+  }, [loaded, cutsKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const scene: Scene = { settings, analysis: loaded?.analysis ?? null, pages, assets: { bgImage, logo } };
+  /** Applies a transcript edit with undo history. */
+  const wordsRef = useRef(words);
+  wordsRef.current = words;
+  const commitWords = useCallback((next: Word[]) => {
+    const h = history.current;
+    h.past.push(wordsRef.current);
+    if (h.past.length > 200) h.past.shift();
+    h.future = [];
+    setWords(next);
+  }, []);
+  const undo = useCallback(() => {
+    const h = history.current;
+    const prev = h.past.pop();
+    if (!prev) return;
+    h.future.push(wordsRef.current);
+    setWords(prev);
+  }, []);
+  const redo = useCallback(() => {
+    const h = history.current;
+    const next = h.future.pop();
+    if (!next) return;
+    h.past.push(wordsRef.current);
+    setWords(next);
+  }, []);
+
+  const map = edit?.map ?? null;
+  const keptWords = useMemo(() => (map ? remapWords(words, map) : words), [words, map]);
+  const trim: [number, number] = map ? [map.toEdit(trimSrc[0]), map.toEdit(trimSrc[1])] : trimSrc;
+  const setTrim = useCallback((t: [number, number]) => {
+    const m = editRef.current?.map;
+    if (m) setTrimSrc([m.toSource(t[0]), m.toSource(t[1])]);
+  }, []);
+  const cutSeconds = loaded && map ? loaded.buffer.duration - map.duration : 0;
+
+  const pages = useMemo(() => buildPages(keptWords, settings.captions.maxWordsPerLine * settings.captions.lines), [keptWords, settings.captions.maxWordsPerLine, settings.captions.lines]);
+
+  const scene: Scene = { settings, analysis: edit?.analysis ?? null, pages, assets: { bgImage, logo } };
   const sceneRef = useRef<Scene>(scene);
   sceneRef.current = scene;
 
   // Keep the player inside the clip.
   useEffect(() => {
-    if (!loaded) return;
-    loaded.player.loopStart = trim[0];
-    loaded.player.stopAt = trim[1];
-  }, [loaded, trim]);
+    if (!edit) return;
+    edit.player.loopStart = trim[0];
+    edit.player.stopAt = trim[1];
+  }, [edit, trim[0], trim[1]]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     void ensureFonts(settings);
@@ -102,6 +171,7 @@ export default function App() {
     async (buffer: AudioBuffer, modelId: string) => {
       txHandle.current?.cancel();
       setWords([]);
+      history.current = { past: [], future: [] };
       setTxError(null);
       setTx({ stage: 'loading', message: 'Preparing audio…', fraction: 0 });
       const audio16k = await toWhisperInput(buffer);
@@ -140,12 +210,12 @@ export default function App() {
       setDecoding(true);
       try {
         const buffer = await decodeAudioFile(file);
-        const analysis = new AudioAnalysis(buffer);
-        loaded?.player.dispose();
         txHandle.current?.cancel();
-        const player = new Player(buffer);
-        setLoaded({ file, buffer, analysis, player });
-        setTrim([0, buffer.duration]);
+        editRef.current?.player.dispose();
+        editRef.current = null;
+        setEdit(null);
+        setLoaded({ file, buffer, analysis: new AudioAnalysis(buffer) });
+        setTrimSrc([0, buffer.duration]);
         void startTranscription(buffer, model);
       } catch (e) {
         console.error(e);
@@ -171,25 +241,34 @@ export default function App() {
 
   // Test hook (dev builds only) so the e2e test can seek to exact timestamps.
   useEffect(() => {
-    if (import.meta.env.DEV) (window as unknown as { __ag: unknown }).__ag = { player: loaded?.player, analysis: loaded?.analysis };
-  }, [loaded]);
+    if (import.meta.env.DEV) (window as unknown as { __ag: unknown }).__ag = { player: edit?.player, analysis: edit?.analysis, map: edit?.map };
+  }, [edit]);
 
   // Space toggles playback (unless typing).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
-      if (e.code === 'Space' && tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT' && loaded && !exportState) {
+      const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+      if (typing || !edit || exportState) return;
+      if (e.code === 'Space') {
         e.preventDefault();
-        loaded.player.toggle();
+        edit.player.toggle();
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !tx) {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y' && !tx) {
+        e.preventDefault();
+        redo();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [loaded, exportState]);
+  }, [edit, exportState, tx, undo, redo]);
 
   const startExport = async () => {
-    if (!loaded) return;
-    loaded.player.pause();
+    if (!loaded || !edit) return;
+    edit.player.pause();
     const [start, end] = trim;
     const filename = `${loaded.file.name.replace(/\.[^.]+$/, '')}-${settings.aspect.replace(':', 'x')}.mp4`;
 
@@ -218,7 +297,7 @@ export default function App() {
         width: W,
         height: H,
         fps: FPS,
-        audio: loaded.buffer,
+        audio: edit.source,
         start,
         end,
         writable,
@@ -300,19 +379,43 @@ export default function App() {
             <DropZone onFile={onFile} error={loadError} />
           </div>
         )
+      ) : !edit ? (
+        <div className="flex flex-1 items-center justify-center text-neutral-400">Analyzing audio…</div>
       ) : (
         <div className="flex min-h-0 flex-1">
           <main className="flex min-w-0 flex-1 flex-col">
             <div className="min-h-0 flex-[3] p-4 pb-2">
-              <Preview sceneRef={sceneRef} player={loaded.player} aspectKey={settings.aspect} />
+              <Preview sceneRef={sceneRef} player={edit.player} aspectKey={settings.aspect} />
             </div>
             <div className="px-4 pb-3">
-              <Transport player={loaded.player} trim={trim} setTrim={setTrim} analysis={loaded.analysis} />
+              <Transport player={edit.player} trim={trim} setTrim={setTrim} analysis={edit.analysis} />
             </div>
             <div className="flex min-h-0 flex-[2] flex-col border-t border-neutral-800">
               <div className="flex items-center gap-3 px-4 py-2">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-400">Transcript</h2>
-                <span className="text-xs text-neutral-600">click a word to jump · double-click to fix it</span>
+                <span className="hidden text-xs text-neutral-600 xl:inline">click to jump · drag + Delete to cut · double-click to fix</span>
+                {cuts.length > 0 && (
+                  <span className="flex items-center gap-2 text-xs">
+                    <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-red-300">
+                      {cuts.length} cut{cuts.length > 1 ? 's' : ''} · −{cutSeconds.toFixed(1)}s
+                    </span>
+                    <button
+                      className="text-neutral-400 hover:text-white disabled:opacity-40"
+                      disabled={!!tx}
+                      onClick={() => commitWords(words.map((w) => (w.deleted ? { ...w, deleted: false } : w)))}
+                    >
+                      Restore all
+                    </button>
+                  </span>
+                )}
+                <span className="flex items-center gap-1">
+                  <button className="rounded px-1.5 text-sm text-neutral-400 hover:bg-neutral-800 hover:text-white disabled:opacity-30" title="Undo (⌘Z)" disabled={!!tx || !history.current.past.length} onClick={undo}>
+                    ↶
+                  </button>
+                  <button className="rounded px-1.5 text-sm text-neutral-400 hover:bg-neutral-800 hover:text-white disabled:opacity-30" title="Redo (⇧⌘Z)" disabled={!!tx || !history.current.future.length} onClick={redo}>
+                    ↷
+                  </button>
+                </span>
                 <div className="ml-auto flex items-center gap-2">
                   {tx ? (
                     <>
@@ -345,7 +448,7 @@ export default function App() {
                       </div>
                       <Button
                         onClick={() => {
-                          if (!words.length || confirm('Re-transcribe? Your transcript edits will be replaced.')) void startTranscription(loaded.buffer, model);
+                          if (!words.length || confirm('Re-transcribe? Your transcript edits and cuts will be replaced.')) void startTranscription(loaded.buffer, model);
                         }}
                       >
                         {words.length ? 'Re-transcribe' : 'Transcribe'}
@@ -360,7 +463,7 @@ export default function App() {
                 </div>
               )}
               <div className="min-h-0 flex-1">
-                <Transcript words={words} setWords={setWords} player={loaded.player} trim={trim} busy={txBusy} />
+                <Transcript words={words} commit={commitWords} player={edit.player} map={edit.map} trimSrc={trimSrc} busy={txBusy} />
               </div>
             </div>
           </main>
